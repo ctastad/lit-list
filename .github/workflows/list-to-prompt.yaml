@@ -1,0 +1,123 @@
+name: list-to-prompt
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Run mode"
+        type: choice
+        options: [port, find]
+        default: port
+      list_id:
+        description: "Hardcover list ID"
+        type: string
+        required: false
+      prompt_id:
+        description: "Existing prompt ID (leave blank to create a new one)"
+        type: string
+        required: false
+      question:
+        description: "Prompt question (only when creating)"
+        type: string
+        required: false
+      prompt_description:
+        description: "Prompt description (required when creating)"
+        type: string
+        required: false
+      privacy:
+        description: "1=public 2=followers 3=private"
+        type: string
+        default: "1"
+      match:
+        description: "Substring filter (find mode only)"
+        type: string
+        required: false
+      apply:
+        description: "Write changes (unchecked = dry run)"
+        type: boolean
+        default: false
+      confirm:
+        description: 'Type APPLY to authorise writes'
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: list-to-prompt
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run list_to_prompt
+        env:
+          HARDCOVER_TOKEN: ${{ secrets.HARDCOVER_TOKEN }}
+          MODE: ${{ github.event.inputs.mode }}
+          LIST_ID: ${{ github.event.inputs.list_id }}
+          PROMPT_ID: ${{ github.event.inputs.prompt_id }}
+          QUESTION: ${{ github.event.inputs.question }}
+          PROMPT_DESCRIPTION: ${{ github.event.inputs.prompt_description }}
+          PRIVACY: ${{ github.event.inputs.privacy }}
+          MATCH: ${{ github.event.inputs.match }}
+          APPLY: ${{ github.event.inputs.apply }}
+          CONFIRM: ${{ github.event.inputs.confirm }}
+        run: |
+          set -euo pipefail
+
+          args=()
+
+          if [[ "${MODE:-port}" == "find" ]]; then
+            args+=(--find)
+            if [[ -n "${MATCH:-}" ]]; then
+              args+=(--match "$MATCH")
+            fi
+          else
+            if [[ -z "${LIST_ID:-}" ]]; then
+              echo "::error::list_id is required in port mode"
+              exit 1
+            fi
+            args+=(--list-id "$LIST_ID")
+
+            if [[ -n "${PROMPT_ID:-}" ]]; then
+              args+=(--prompt-id "$PROMPT_ID")
+            elif [[ -n "${QUESTION:-}" ]]; then
+              args+=(--create "$QUESTION")
+              args+=(--description "${PROMPT_DESCRIPTION:-}")
+              args+=(--privacy "${PRIVACY:-1}")
+            else
+              echo "::error::Provide prompt_id, or a question to create one"
+              exit 1
+            fi
+
+            if [[ "${APPLY:-false}" == "true" ]]; then
+              if [[ "${CONFIRM:-}" != "APPLY" ]]; then
+                echo "::error::apply is checked but confirm is not APPLY — refusing to write"
+                exit 1
+              fi
+              args+=(--apply)
+            fi
+          fi
+
+          echo "Running: python scripts/list_to_prompt.py ${args[*]}"
+          python scripts/list_to_prompt.py "${args[@]}" 2>&1 | tee run.log
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### list-to-prompt"
+            echo ""
+            echo '```'
+            cat run.log 2>/dev/null || echo "(no output captured)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
